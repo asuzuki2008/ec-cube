@@ -20,18 +20,37 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
  */
+namespace Eccube\Form\Type\Master;
 
+use Symfony\Component\Form\AbstractType;
+use Symfony\Component\Form\FormBuilderInterface;
+use Symfony\Component\OptionsResolver\OptionsResolver;
 
-namespace Eccube\Tests\Web\Admin\Basis;
-
-use Eccube\Tests\Web\Admin\AbstractAdminWebTestCase;
-
-class ShopControllerTest extends AbstractAdminWebTestCase
+class TagType extends AbstractType
 {
-
-    public function testRoutingAdminBasis()
+    /**
+     * {@inheritdoc}
+     */
+    public function configureOptions(OptionsResolver $resolver)
     {
-        $this->client->request('GET', $this->app['url_generator']->generate('admin_setting_shop'));
-        $this->assertTrue($this->client->getResponse()->isSuccessful());
+        $resolver->setDefaults(array(
+            'class' => 'Eccube\Entity\Master\Tag',
+        ));
+    }
+
+    /**
+     * {@inheritdoc}
+     */
+    public function getParent()
+    {
+        return 'master';
+    }
+
+    /**
+     * {@inheritdoc}
+     */
+    public function getName()
+    {
+        return 'tag';
     }
 }

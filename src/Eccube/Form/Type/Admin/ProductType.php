@@ -27,8 +27,8 @@ namespace Eccube\Form\Type\Admin;
 use Symfony\Component\Form\AbstractType;
 use Symfony\Component\Form\Extension\Core\Type;
 use Symfony\Component\Form\FormBuilderInterface;
-use Symfony\Component\Validator\Constraints as Assert;
 use Symfony\Component\OptionsResolver\OptionsResolverInterface;
+use Symfony\Component\Validator\Constraints as Assert;
 
 class ProductType extends AbstractType
 {
@@ -74,14 +74,14 @@ class ProductType extends AbstractType
             ->add('Category', 'category', array(
                'label' => '商品カテゴリ',
                'multiple' => true,
-               'expanded' => true,
                'mapped' => false,
             ))
 
             // 詳細な説明
-            ->add('tag', 'text', array(
-                'label' => 'タグ',
+            ->add('Tag', 'tag', array(
                 'required' => false,
+                'multiple' => true,
+                'expanded' => true,
                 'mapped' => false,
             ))
             ->add('search_word', 'textarea', array(
@@ -135,7 +135,6 @@ class ProductType extends AbstractType
                 'allow_add' => true,
                 'allow_delete' => true,
             ))
-            ->addEventSubscriber(new \Eccube\Event\FormEventSubscriber())
         ;
 
     }

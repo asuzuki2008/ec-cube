@@ -25,21 +25,11 @@ namespace Eccube\Form\Type;
 
 use Symfony\Component\Form\AbstractType;
 use Symfony\Component\Form\FormBuilderInterface;
-use Symfony\Component\Form\FormView;
 use Symfony\Component\Form\FormInterface;
+use Symfony\Component\Form\FormView;
 use Symfony\Component\OptionsResolver\OptionsResolver;
 use Symfony\Component\Validator\Constraints as Assert;
 
-/**
- * AddressType
- *
- * @uses AbstractType
- * @package
- * @version $id$
- * @copyright
- * @author Nobuhiko Kimoto <info@nob-log.info>
- * @license
- */
 class AddressType extends AbstractType
 {
     /**
@@ -82,7 +72,6 @@ class AddressType extends AbstractType
             ->add($options['pref_name'], 'pref', array_merge_recursive($options['options'], $options['pref_options']))
             ->add($options['addr01_name'], 'text', array_merge_recursive($options['options'], $options['addr01_options']))
             ->add($options['addr02_name'], 'text', array_merge_recursive($options['options'], $options['addr02_options']))
-            ->addEventSubscriber(new \Eccube\Event\FormEventSubscriber())
         ;
 
         $builder->setAttribute('pref_name', $options['pref_name']);

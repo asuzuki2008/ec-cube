@@ -22,18 +22,34 @@
  * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
  */
 
+//[INFO]index.php,install.phpをEC-CUBEルート直下に移動させる場合は、コメントアウトしている行に置き換える
 require __DIR__.'/../autoload.php';
+//require __DIR__.'/autoload.php';
 
 ini_set('display_errors', 'Off');
 error_reporting(E_ALL & ~E_DEPRECATED & ~E_STRICT);
 
-$app = \Eccube\Application::getInstance();
+// see http://silex.sensiolabs.org/doc/web_servers.html#php-5-4
+$filename = __DIR__.preg_replace('#(\?.*)$#', '', $_SERVER['REQUEST_URI']);
+if (php_sapi_name() === 'cli-server' && is_file($filename)) {
+    return false;
+}
+
+// output_config_php = true に設定することで、Config Yaml ファイルを元に Config PHP ファイルが出力されます。
+// app/config/eccube, src/Eccube/Resource/config 以下に書き込み権限が必要です。
+// Config PHP ファイルが存在する場合は、 Config Yaml より優先されます。
+// Yaml ファイルをパースする必要が無いため、高速化が期待できます。
+$app = \Eccube\Application::getInstance(array('output_config_php' => false));
 
 // インストールされてなければインストーラにリダイレクト
 if ($app['config']['eccube_install']) {
     $app->initialize();
     $app->initializePlugin();
-    $app->run();
+    if ($app['config']['http_cache']['enabled']) {
+        $app['http_cache']->run();
+    } else {
+        $app->run();
+    }
 } else {
     $location = str_replace('index.php', 'install.php', $_SERVER['SCRIPT_NAME']);
     header('Location:'.$location);

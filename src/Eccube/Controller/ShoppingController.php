@@ -28,10 +28,12 @@ use Eccube\Application;
 use Eccube\Common\Constant;
 use Eccube\Entity\Customer;
 use Eccube\Entity\CustomerAddress;
-use Eccube\Entity\MailHistory;
 use Eccube\Entity\ShipmentItem;
 use Eccube\Entity\Shipping;
+use Eccube\Event\EccubeEvents;
+use Eccube\Event\EventArgs;
 use Eccube\Exception\CartException;
+use Eccube\Exception\ShoppingException;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
@@ -111,16 +113,32 @@ class ShoppingController extends AbstractController
             // セッション情報を削除
             $app['session']->remove($this->sessionOrderKey);
             $app['session']->remove($this->sessionMultipleKey);
-        } else {
-            // 計算処理
-            $Order = $app['eccube.service.shopping']->getAmount($Order);
         }
 
         // 受注関連情報を最新状態に更新
         $app['orm.em']->refresh($Order);
 
         // form作成
-        $form = $app['eccube.service.shopping']->getShippingForm($Order);
+        $builder = $app['eccube.service.shopping']->getShippingFormBuilder($Order);
+
+        $event = new EventArgs(
+            array(
+                'builder' => $builder,
+                'Order' => $Order,
+            ),
+            $request
+        );
+        $app['eccube.event.dispatcher']->dispatch(EccubeEvents::FRONT_SHOPPING_INDEX_INITIALIZE, $event);
+
+        $form = $builder->getForm();
+
+        if ($Order->getTotalPrice() < 0) {
+            // 合計金額がマイナスの場合、エラー
+            $message = $app->trans('shopping.total.price', array('totalPrice' => number_format($Order->getTotalPrice())));
+            $app->addError($message);
+
+            return $app->redirect($app->url('shopping_error'));
+        }
 
         // 複数配送の場合、エラーメッセージを一度だけ表示
         if (!$app['session']->has($this->sessionMultipleKey)) {
@@ -160,7 +178,19 @@ class ShoppingController extends AbstractController
         }
 
         // form作成
-        $form = $app['eccube.service.shopping']->getShippingForm($Order);
+        $builder = $app['eccube.service.shopping']->getShippingFormBuilder($Order);
+
+        $event = new EventArgs(
+            array(
+                'builder' => $builder,
+                'Order' => $Order,
+            ),
+            $request
+        );
+        $app['eccube.event.dispatcher']->dispatch(EccubeEvents::FRONT_SHOPPING_CONFIRM_INITIALIZE, $event);
+
+        $form = $builder->getForm();
+
         $form->handleRequest($request);
 
         if ($form->isSubmitted() && $form->isValid()) {
@@ -170,28 +200,22 @@ class ShoppingController extends AbstractController
             $em = $app['orm.em'];
             $em->getConnection()->beginTransaction();
             try {
-                // 商品公開ステータスチェック、商品制限数チェック、在庫チェック
-                $check = $app['eccube.service.shopping']->isOrderProduct($em, $Order);
-                if (!$check) {
-                    $em->getConnection()->rollback();
 
-                    $app->addError('front.shopping.stock.error');
-                    return $app->redirect($app->url('shopping_error'));
-                }
-
-                // 受注情報、配送情報を更新
-                $app['eccube.service.shopping']->setOrderUpdate($Order, $data);
-                // 在庫情報を更新
-                $app['eccube.service.shopping']->setStockUpdate($em, $Order);
-
-                if ($app->isGranted('ROLE_USER')) {
-                    // 会員の場合、購入金額を更新
-                    $app['eccube.service.shopping']->setCustomerUpdate($Order, $app->user());
-                }
+                // お問い合わせ、配送時間などのフォーム項目をセット
+                $app['eccube.service.shopping']->setFormData($Order, $data);
+                // 購入処理
+                $app['eccube.service.shopping']->processPurchase($Order);
 
                 $em->flush();
                 $em->getConnection()->commit();
 
+            } catch (ShoppingException $e) {
+                $em->getConnection()->rollback();
+
+                $app->log($e);
+                $app->addError($e->getMessage());
+
+                return $app->redirect($app->url('shopping_error'));
             } catch (\Exception $e) {
                 $em->getConnection()->rollback();
 
@@ -204,31 +228,38 @@ class ShoppingController extends AbstractController
             // カート削除
             $app['eccube.service.cart']->clear()->save();
 
-            // メール送信
-            $app['eccube.service.mail']->sendOrderMail($Order);
+            $event = new EventArgs(
+                array(
+                    'form' => $form,
+                    'Order' => $Order,
+                ),
+                $request
+            );
+            $app['eccube.event.dispatcher']->dispatch(EccubeEvents::FRONT_SHOPPING_CONFIRM_PROCESSING, $event);
+
+            if ($event->getResponse() !== null) {
+                return $event->getResponse();
+            }
 
             // 受注IDをセッションにセット
             $app['session']->set($this->sessionOrderKey, $Order->getId());
 
-            // 送信履歴を保存.
-            $MailTemplate = $app['eccube.repository.mail_template']->find(1);
+            // メール送信
+            $MailHistory = $app['eccube.service.shopping']->sendOrderMail($Order);
 
-            $body = $app->renderView($MailTemplate->getFileName(), array(
-                'header' => $MailTemplate->getHeader(),
-                'footer' => $MailTemplate->getFooter(),
-                'Order' => $Order,
-            ));
+            $event = new EventArgs(
+                array(
+                    'form' => $form,
+                    'Order' => $Order,
+                    'MailHistory' => $MailHistory,
+                ),
+                $request
+            );
+            $app['eccube.event.dispatcher']->dispatch(EccubeEvents::FRONT_SHOPPING_CONFIRM_COMPLETE, $event);
 
-            $MailHistory = new MailHistory();
-            $MailHistory
-                ->setSubject('[' . $app['eccube.repository.base_info']->get()->getShopName() . '] ' . $MailTemplate->getSubject())
-                ->setMailBody($body)
-                ->setMailTemplate($MailTemplate)
-                ->setSendDate(new \DateTime())
-                ->setOrder($Order);
-            $app['orm.em']->persist($MailHistory);
-            $app['orm.em']->flush($MailHistory);
-
+            if ($event->getResponse() !== null) {
+                return $event->getResponse();
+            }
 
             // 完了画面表示
             return $app->redirect($app->url('shopping_complete'));
@@ -244,10 +275,22 @@ class ShoppingController extends AbstractController
     /**
      * 購入完了画面表示
      */
-    public function complete(Application $app)
+    public function complete(Application $app, Request $request)
     {
         // 受注IDを取得
         $orderId = $app['session']->get($this->sessionOrderKey);
+
+        $event = new EventArgs(
+            array(
+                'orderId' => $orderId,
+            ),
+            $request
+        );
+        $app['eccube.event.dispatcher']->dispatch(EccubeEvents::FRONT_SHOPPING_COMPLETE_INITIALIZE, $event);
+
+        if ($event->getResponse() !== null) {
+            return $event->getResponse();
+        }
 
         // 受注IDセッションを削除
         $app['session']->remove($this->sessionOrderKey);
@@ -279,7 +322,19 @@ class ShoppingController extends AbstractController
             return $app->redirect($app->url('shopping'));
         }
 
-        $form = $app['eccube.service.shopping']->getShippingForm($Order);
+        $builder = $app['eccube.service.shopping']->getShippingFormBuilder($Order);
+
+        $event = new EventArgs(
+            array(
+                'builder' => $builder,
+                'Order' => $Order,
+            ),
+            $request
+        );
+        $app['eccube.event.dispatcher']->dispatch(EccubeEvents::FRONT_SHOPPING_DELIVERY_INITIALIZE, $event);
+
+        $form = $builder->getForm();
+
         $form->handleRequest($request);
 
         if ($form->isSubmitted() && $form->isValid()) {
@@ -321,13 +376,20 @@ class ShoppingController extends AbstractController
 
             $Order->setDeliveryFeeTotal($app['eccube.service.shopping']->getShippingDeliveryFeeTotal($shippings));
 
-            $total = $Order->getSubTotal() + $Order->getCharge() + $Order->getDeliveryFeeTotal();
-
-            $Order->setTotal($total);
-            $Order->setPaymentTotal($total);
+            // 合計金額の再計算
+            $Order = $app['eccube.service.shopping']->getAmount($Order);
 
             // 受注関連情報を最新状態に更新
             $app['orm.em']->flush();
+
+            $event = new EventArgs(
+                array(
+                    'form' => $form,
+                    'Order' => $Order,
+                ),
+                $request
+            );
+            $app['eccube.event.dispatcher']->dispatch(EccubeEvents::FRONT_SHOPPING_DELIVERY_COMPLETE, $event);
 
             return $app->redirect($app->url('shopping'));
         }
@@ -353,7 +415,19 @@ class ShoppingController extends AbstractController
             return $app->redirect($app->url('shopping'));
         }
 
-        $form = $app['eccube.service.shopping']->getShippingForm($Order);
+        $builder = $app['eccube.service.shopping']->getShippingFormBuilder($Order);
+
+        $event = new EventArgs(
+            array(
+                'builder' => $builder,
+                'Order' => $Order,
+            ),
+            $request
+        );
+        $app['eccube.event.dispatcher']->dispatch(EccubeEvents::FRONT_SHOPPING_PAYMENT_INITIALIZE, $event);
+
+        $form = $builder->getForm();
+
         $form->handleRequest($request);
 
         if ($form->isSubmitted() && $form->isValid()) {
@@ -366,13 +440,20 @@ class ShoppingController extends AbstractController
             $Order->setMessage($message);
             $Order->setCharge($payment->getCharge());
 
-            $total = $Order->getSubTotal() + $Order->getCharge() + $Order->getDeliveryFeeTotal();
-
-            $Order->setTotal($total);
-            $Order->setPaymentTotal($total);
+            // 合計金額の再計算
+            $Order = $app['eccube.service.shopping']->getAmount($Order);
 
             // 受注関連情報を最新状態に更新
             $app['orm.em']->flush();
+
+            $event = new EventArgs(
+                array(
+                    'form' => $form,
+                    'Order' => $Order,
+                ),
+                $request
+            );
+            $app['eccube.event.dispatcher']->dispatch(EccubeEvents::FRONT_SHOPPING_PAYMENT_COMPLETE, $event);
 
             return $app->redirect($app->url('shopping'));
         }
@@ -398,7 +479,19 @@ class ShoppingController extends AbstractController
             return $app->redirect($app->url('shopping'));
         }
 
-        $form = $app['eccube.service.shopping']->getShippingForm($Order);
+        $builder = $app['eccube.service.shopping']->getShippingFormBuilder($Order);
+
+        $event = new EventArgs(
+            array(
+                'builder' => $builder,
+                'Order' => $Order,
+            ),
+            $request
+        );
+        $app['eccube.event.dispatcher']->dispatch(EccubeEvents::FRONT_SHOPPING_SHIPPING_CHANGE_INITIALIZE, $event);
+
+        $form = $builder->getForm();
+
         $form->handleRequest($request);
 
         if ($form->isSubmitted() && $form->isValid()) {
@@ -472,8 +565,20 @@ class ShoppingController extends AbstractController
             // 配送料金の設定
             $app['eccube.service.shopping']->setShippingDeliveryFee($Shipping);
 
+            // 合計金額の再計算
+            $Order = $app['eccube.service.shopping']->getAmount($Order);
+
             // 配送先を更新
             $app['orm.em']->flush();
+
+            $event = new EventArgs(
+                array(
+                    'Order' => $Order,
+                    'shippingId' => $id,
+                ),
+                $request
+            );
+            $app['eccube.event.dispatcher']->dispatch(EccubeEvents::FRONT_SHOPPING_SHIPPING_COMPLETE, $event);
 
             return $app->redirect($app->url('shopping'));
         }
@@ -503,7 +608,19 @@ class ShoppingController extends AbstractController
             return $app->redirect($app->url('shopping'));
         }
 
-        $form = $app['eccube.service.shopping']->getShippingForm($Order);
+        $builder = $app['eccube.service.shopping']->getShippingFormBuilder($Order);
+
+        $event = new EventArgs(
+            array(
+                'builder' => $builder,
+                'Order' => $Order,
+            ),
+            $request
+        );
+        $app['eccube.event.dispatcher']->dispatch(EccubeEvents::FRONT_SHOPPING_SHIPPING_EDIT_CHANGE_INITIALIZE, $event);
+
+        $form = $builder->getForm();
+
         $form->handleRequest($request);
 
         if ($form->isSubmitted() && $form->isValid()) {
@@ -566,7 +683,20 @@ class ShoppingController extends AbstractController
         }
 
         $builder = $app['form.factory']->createBuilder('shopping_shipping', $CustomerAddress);
+
+        $event = new EventArgs(
+            array(
+                'builder' => $builder,
+                'Order' => $Order,
+                'Shipping' => $Shipping,
+                'CustomerAddress' => $CustomerAddress,
+            ),
+            $request
+        );
+        $app['eccube.event.dispatcher']->dispatch(EccubeEvents::FRONT_SHOPPING_SHIPPING_EDIT_INITIALIZE, $event);
+
         $form = $builder->getForm();
+
         $form->handleRequest($request);
 
         if ($form->isSubmitted() && $form->isValid()) {
@@ -580,8 +710,21 @@ class ShoppingController extends AbstractController
             // 配送料金の設定
             $app['eccube.service.shopping']->setShippingDeliveryFee($Shipping);
 
+            // 合計金額の再計算
+            $app['eccube.service.shopping']->getAmount($Order);
+
             // 配送先を更新 
             $app['orm.em']->flush();
+
+            $event = new EventArgs(
+                array(
+                    'form' => $form,
+                    'Shipping' => $Shipping,
+                    'CustomerAddress' => $CustomerAddress,
+                ),
+                $request
+            );
+            $app['eccube.event.dispatcher']->dispatch(EccubeEvents::FRONT_SHOPPING_SHIPPING_EDIT_COMPLETE, $event);
 
             return $app->redirect($app->url('shopping'));
         }
@@ -634,7 +777,7 @@ class ShoppingController extends AbstractController
                     ->setTel03($data['customer_tel03'])
                     ->setZip01($data['customer_zip01'])
                     ->setZip02($data['customer_zip02'])
-                    ->setZipCode($data['customer_zip01'] . $data['customer_zip02'])
+                    ->setZipCode($data['customer_zip01'].$data['customer_zip02'])
                     ->setPref($pref)
                     ->setAddr01($data['customer_addr01'])
                     ->setAddr02($data['customer_addr02'])
@@ -645,6 +788,15 @@ class ShoppingController extends AbstractController
 
                 // 受注関連情報を最新状態に更新
                 $app['orm.em']->refresh($Order);
+
+                $event = new EventArgs(
+                    array(
+                        'Order' => $Order,
+                        'data' => $data,
+                    ),
+                    $request
+                );
+                $app['eccube.event.dispatcher']->dispatch(EccubeEvents::FRONT_SHOPPING_CUSTOMER_INITIALIZE, $event);
 
                 $response = new Response(json_encode('OK'));
                 $response->headers->set('Content-Type', 'application/json');
@@ -682,6 +834,14 @@ class ShoppingController extends AbstractController
             }
         }
 
+        $event = new EventArgs(
+            array(
+                'builder' => $builder,
+            ),
+            $request
+        );
+        $app['eccube.event.dispatcher']->dispatch(EccubeEvents::FRONT_SHOPPING_LOGIN_INITIALIZE, $event);
+
         $form = $builder->getForm();
 
         return $app->render('Shopping/login.twig', array(
@@ -714,7 +874,18 @@ class ShoppingController extends AbstractController
             return $app->redirect($app->url('cart'));
         }
 
-        $form = $app['form.factory']->createBuilder('nonmember')->getForm();
+        $builder = $app['form.factory']->createBuilder('nonmember');
+
+        $event = new EventArgs(
+            array(
+                'builder' => $builder,
+            ),
+            $request
+        );
+        $app['eccube.event.dispatcher']->dispatch(EccubeEvents::FRONT_SHOPPING_NONMEMBER_INITIALIZE, $event);
+
+        $form = $builder->getForm();
+
         $form->handleRequest($request);
 
         if ($form->isSubmitted() && $form->isValid()) {
@@ -732,7 +903,7 @@ class ShoppingController extends AbstractController
                 ->setTel03($data['tel03'])
                 ->setZip01($data['zip01'])
                 ->setZip02($data['zip02'])
-                ->setZipCode($data['zip01'] . $data['zip02'])
+                ->setZipCode($data['zip01'].$data['zip02'])
                 ->setPref($data['pref'])
                 ->setAddr01($data['addr01'])
                 ->setAddr02($data['addr02']);
@@ -751,7 +922,7 @@ class ShoppingController extends AbstractController
                 ->setTel03($data['tel03'])
                 ->setZip01($data['zip01'])
                 ->setZip02($data['zip02'])
-                ->setZipCode($data['zip01'] . $data['zip02'])
+                ->setZipCode($data['zip01'].$data['zip02'])
                 ->setPref($data['pref'])
                 ->setAddr01($data['addr01'])
                 ->setAddr02($data['addr02'])
@@ -783,6 +954,19 @@ class ShoppingController extends AbstractController
             $customerAddresses[] = $CustomerAddress;
             $app['session']->set($this->sessionCustomerAddressKey, serialize($customerAddresses));
 
+            $event = new EventArgs(
+                array(
+                    'form' => $form,
+                    'Order' => $Order,
+                ),
+                $request
+            );
+            $app['eccube.event.dispatcher']->dispatch(EccubeEvents::FRONT_SHOPPING_NONMEMBER_COMPLETE, $event);
+
+            if ($event->getResponse() !== null) {
+                return $event->getResponse();
+            }
+
             return $app->redirect($app->url('shopping'));
         }
 
@@ -806,7 +990,19 @@ class ShoppingController extends AbstractController
             return $app->redirect($app->url('shopping'));
         }
 
-        $form = $app['eccube.service.shopping']->getShippingForm($Order);
+        $builder = $app['eccube.service.shopping']->getShippingFormBuilder($Order);
+
+        $event = new EventArgs(
+            array(
+                'builder' => $builder,
+                'Order' => $Order,
+            ),
+            $request
+        );
+        $app['eccube.event.dispatcher']->dispatch(EccubeEvents::FRONT_SHOPPING_SHIPPING_MULTIPLE_CHANGE_INITIALIZE, $event);
+
+        $form = $builder->getForm();
+
         $form->handleRequest($request);
 
         if ($form->isSubmitted() && $form->isValid()) {
@@ -845,6 +1041,8 @@ class ShoppingController extends AbstractController
             // カートが存在しない時はエラー
             return $app->redirect($app->url('cart'));
         }
+
+        /** @var \Eccube\Entity\Order $Order */
         $Order = $app['eccube.service.shopping']->getOrder($app['config']['order_processing']);
         if (!$Order) {
             $app->addError('front.shopping.order.error');
@@ -877,14 +1075,26 @@ class ShoppingController extends AbstractController
             }
         }
 
-        $form = $app->form()->getForm();
-        $form
+        $builder = $app->form();
+        $builder
             ->add('shipping_multiple', 'collection', array(
                 'type' => 'shipping_multiple',
                 'data' => $shipmentItems,
                 'allow_add' => true,
                 'allow_delete' => true,
             ));
+
+        $event = new EventArgs(
+            array(
+                'builder' => $builder,
+                'Order' => $Order,
+            ),
+            $request
+        );
+        $app['eccube.event.dispatcher']->dispatch(EccubeEvents::FRONT_SHOPPING_SHIPPING_MULTIPLE_INITIALIZE, $event);
+
+        $form = $builder->getForm();
+
         $form->handleRequest($request);
 
         $errors = array();
@@ -912,7 +1122,7 @@ class ShoppingController extends AbstractController
             foreach ($compItemQuantities as $key => $value) {
                 if (array_key_exists($key, $itemQuantities)) {
                     if ($itemQuantities[$key] != $value) {
-                        $errors[] = array('message' => '数量の数が異なっています。');
+                        $errors[] = array('message' => $app->trans('shopping.multiple.quantity.diff'));
 
                         // 対象がなければエラー
                         return $app->render('Shopping/shipping_multiple.twig', array(
@@ -992,11 +1202,26 @@ class ShoppingController extends AbstractController
 
                         // 配送料金の設定
                         $app['eccube.service.shopping']->setShippingDeliveryFee($Shipping);
+
+                        $Order->addShipping($Shipping);
                     }
                 }
             }
+
+            // 合計金額の再計算
+            $Order = $app['eccube.service.shopping']->getAmount($Order);
+
             // 配送先を更新
             $app['orm.em']->flush();
+
+            $event = new EventArgs(
+                array(
+                    'form' => $form,
+                    'Order' => $Order,
+                ),
+                $request
+            );
+            $app['eccube.event.dispatcher']->dispatch(EccubeEvents::FRONT_SHOPPING_SHIPPING_MULTIPLE_COMPLETE, $event);
 
             return $app->redirect($app->url('shopping'));
         }
@@ -1026,7 +1251,19 @@ class ShoppingController extends AbstractController
         $CustomerAddress->setCustomer($Customer);
         $Customer->addCustomerAddress($CustomerAddress);
 
-        $form = $app['form.factory']->createBuilder('shopping_shipping', $CustomerAddress)->getForm();
+        $builder = $app['form.factory']->createBuilder('shopping_shipping', $CustomerAddress);
+
+        $event = new EventArgs(
+            array(
+                'builder' => $builder,
+                'Customer' => $Customer,
+            ),
+            $request
+        );
+        $app['eccube.event.dispatcher']->dispatch(EccubeEvents::FRONT_SHOPPING_SHIPPING_MULTIPLE_EDIT_INITIALIZE, $event);
+
+        $form = $builder->getForm();
+
         $form->handleRequest($request);
 
         if ($form->isSubmitted() && $form->isValid()) {
@@ -1035,6 +1272,15 @@ class ShoppingController extends AbstractController
             $customerAddresses = unserialize($customerAddresses);
             $customerAddresses[] = $CustomerAddress;
             $app['session']->set($this->sessionCustomerAddressKey, serialize($customerAddresses));
+
+            $event = new EventArgs(
+                array(
+                    'form' => $form,
+                    'CustomerAddresses' => $customerAddresses,
+                ),
+                $request
+            );
+            $app['eccube.event.dispatcher']->dispatch(EccubeEvents::FRONT_SHOPPING_SHIPPING_MULTIPLE_EDIT_COMPLETE, $event);
 
             return $app->redirect($app->url('shopping_shipping_multiple'));
         }
@@ -1047,16 +1293,30 @@ class ShoppingController extends AbstractController
     /**
      * 購入エラー画面表示
      */
-    public function shoppingError(Application $app)
+    public function shoppingError(Application $app, Request $request)
     {
+
+        $event = new EventArgs(
+            array(),
+            $request
+        );
+        $app['eccube.event.dispatcher']->dispatch(EccubeEvents::FRONT_SHOPPING_SHIPPING_ERROR_COMPLETE, $event);
+
+        if ($event->getResponse() !== null) {
+            return $event->getResponse();
+        }
+
         return $app->render('Shopping/shopping_error.twig');
     }
 
     /**
      * 非会員でのお客様情報変更時の入力チェック
-     * @param $data リクエストパラメータ
+     *
+     * @param Application $app
+     * @param array       $data リクエストパラメータ
+     * @return array
      */
-    private function customerValidation($app, $data)
+    private function customerValidation(Application $app, array $data)
     {
         // 入力チェック
         $errors = array();
@@ -1069,7 +1329,7 @@ class ShoppingController extends AbstractController
 
         $errors[] = $app['validator']->validateValue($data['customer_name02'], array(
             new Assert\NotBlank(),
-            new Assert\Length(array('max' => $app['config']['name_len'], )),
+            new Assert\Length(array('max' => $app['config']['name_len'],)),
             new Assert\Regex(array('pattern' => '/^[^\s ]+$/u', 'message' => 'form.type.name.firstname.nothasspace'))
         ));
 
@@ -1119,7 +1379,7 @@ class ShoppingController extends AbstractController
 
         $errors[] = $app['validator']->validateValue($data['customer_email'], array(
             new Assert\NotBlank(),
-            new Assert\Email(),
+            new Assert\Email(array('strict' => true)),
         ));
 
         return $errors;

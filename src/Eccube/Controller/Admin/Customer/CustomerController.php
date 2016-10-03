@@ -28,6 +28,8 @@ use Eccube\Application;
 use Eccube\Common\Constant;
 use Eccube\Controller\AbstractController;
 use Eccube\Entity\Master\CsvType;
+use Eccube\Event\EccubeEvents;
+use Eccube\Event\EventArgs;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
@@ -38,9 +40,18 @@ class CustomerController extends AbstractController
     {
         $session = $request->getSession();
         $pagination = array();
-        $searchForm = $app['form.factory']
-            ->createBuilder('admin_search_customer')
-            ->getForm();
+        $builder = $app['form.factory']
+            ->createBuilder('admin_search_customer');
+
+        $event = new EventArgs(
+            array(
+                'builder' => $builder,
+            ),
+            $request
+        );
+        $app['eccube.event.dispatcher']->dispatch(EccubeEvents::ADMIN_CUSTOMER_INDEX_INITIALIZE, $event);
+
+        $searchForm = $builder->getForm();
 
         //アコーディオンの制御初期化( デフォルトでは閉じる )
         $active = false;
@@ -58,6 +69,16 @@ class CustomerController extends AbstractController
                 // paginator
                 $qb = $app['eccube.repository.customer']->getQueryBuilderBySearchData($searchData);
                 $page_no = 1;
+
+                $event = new EventArgs(
+                    array(
+                        'form' => $searchForm,
+                        'qb' => $qb,
+                    ),
+                    $request
+                );
+                $app['eccube.event.dispatcher']->dispatch(EccubeEvents::ADMIN_CUSTOMER_INDEX_SEARCH, $event);
+
                 $pagination = $app['paginator']()->paginate(
                     $qb,
                     $page_no,
@@ -66,20 +87,37 @@ class CustomerController extends AbstractController
 
                 // sessionのデータ保持
                 $session->set('eccube.admin.customer.search', $searchData);
+                $session->set('eccube.admin.customer.search.page_no', $page_no);
             }
         } else {
-            if (is_null($page_no)) {
+            if (is_null($page_no) && $request->get('resume') != Constant::ENABLED) {
                 // sessionを削除
                 $session->remove('eccube.admin.customer.search');
+                $session->remove('eccube.admin.customer.search.page_no');
             } else {
                 // pagingなどの処理
                 $searchData = $session->get('eccube.admin.customer.search');
+                if (is_null($page_no)) {
+                    $page_no = intval($session->get('eccube.admin.customer.search.page_no'));
+                } else {
+                    $session->set('eccube.admin.customer.search.page_no', $page_no);
+                }
                 if (!is_null($searchData)) {
                     // 表示件数
                     $pcount = $request->get('page_count');
                     $page_count = empty($pcount) ? $page_count : $pcount;
 
                     $qb = $app['eccube.repository.customer']->getQueryBuilderBySearchData($searchData);
+
+                    $event = new EventArgs(
+                        array(
+                            'form' => $searchForm,
+                            'qb' => $qb,
+                        ),
+                        $request
+                    );
+                    $app['eccube.event.dispatcher']->dispatch(EccubeEvents::ADMIN_CUSTOMER_INDEX_SEARCH, $event);
+
                     $pagination = $app['paginator']()->paginate(
                         $qb,
                         $page_no,
@@ -102,7 +140,7 @@ class CustomerController extends AbstractController
                 }
             }
         }
-        return $app->renderView('Customer/index.twig', array(
+        return $app->render('Customer/index.twig', array(
             'searchForm' => $searchForm->createView(),
             'pagination' => $pagination,
             'pageMaxis' => $pageMaxis,
@@ -129,6 +167,15 @@ class CustomerController extends AbstractController
         // メール送信
         $app['eccube.service.mail']->sendAdminCustomerConfirmMail($Customer, $activateUrl);
 
+        $event = new EventArgs(
+            array(
+                'Customer' => $Customer,
+                'activateUrl' => $activateUrl,
+            ),
+            $request
+        );
+        $app['eccube.event.dispatcher']->dispatch(EccubeEvents::ADMIN_CUSTOMER_RESEND_COMPLETE, $event);
+
         $app->addSuccess('admin.customer.resend.complete', 'admin');
 
         return $app->redirect($app->url('admin_customer'));
@@ -138,21 +185,34 @@ class CustomerController extends AbstractController
     {
         $this->isTokenValid($app);
 
+        $session = $request->getSession();
+        $page_no = intval($session->get('eccube.admin.customer.search.page_no'));
+        $page_no = $page_no ? $page_no : Constant::ENABLED;
+
         $Customer = $app['orm.em']
             ->getRepository('Eccube\Entity\Customer')
             ->find($id);
 
         if (!$Customer) {
             $app->deleteMessage();
-            return $app->redirect($app->url('admin_customer'));
+            return $app->redirect($app->url('admin_customer_page', array('page_no' => $page_no)).'?resume='.Constant::ENABLED);
         }
 
         $Customer->setDelFlg(Constant::ENABLED);
         $app['orm.em']->persist($Customer);
         $app['orm.em']->flush();
+
+        $event = new EventArgs(
+            array(
+                'Customer' => $Customer,
+            ),
+            $request
+        );
+        $app['eccube.event.dispatcher']->dispatch(EccubeEvents::ADMIN_CUSTOMER_DELETE_COMPLETE, $event);
+
         $app->addSuccess('admin.customer.delete.complete', 'admin');
 
-        return $app->redirect($app->url('admin_customer'));
+        return $app->redirect($app->url('admin_customer_page', array('page_no' => $page_no)).'?resume='.Constant::ENABLED);
     }
 
     /**
@@ -210,6 +270,7 @@ class CustomerController extends AbstractController
         $filename = 'customer_' . $now->format('YmdHis') . '.csv';
         $response->headers->set('Content-Type', 'application/octet-stream');
         $response->headers->set('Content-Disposition', 'attachment; filename=' . $filename);
+
         $response->send();
 
         return $response;

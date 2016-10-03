@@ -3,7 +3,6 @@
 namespace Eccube\Tests\Web\Admin\Product;
 
 use Eccube\Tests\Web\Admin\AbstractAdminWebTestCase;
-use Eccube\Common\Constant;
 use Symfony\Component\HttpFoundation\File\UploadedFile;
 
 class CsvImportControllerTest extends AbstractAdminWebTestCase
@@ -39,15 +38,16 @@ class CsvImportControllerTest extends AbstractAdminWebTestCase
         $csv = array(
             '商品ID' => null,
             '公開ステータス(ID)' => 1,
-            '商品名' => $faker->word,
-            'ショップ用メモ欄' => $faker->paragraph,
-            '商品説明(一覧)' => $faker->paragraph,
-            '商品説明(詳細)' => $faker->text,
-            '検索ワード' => $faker->word,
-            'フリーエリア' => $faker->paragraph,
+            '商品名' => "商品名".$faker->word."商品名",
+            'ショップ用メモ欄' => "ショップ用メモ欄".$faker->paragraph."ショップ用メモ欄",
+            '商品説明(一覧)' => "商品説明(一覧)".$faker->paragraph."商品説明(一覧)",
+            '商品説明(詳細)' => "商品説明(詳細)".$faker->text."商品説明(詳細)",
+            '検索ワード' => "検索ワード".$faker->word."検索ワード",
+            'フリーエリア' => "フリーエリア".$faker->paragraph."フリーエリア",
             '商品削除フラグ' => 0,
             '商品画像' => $faker->word.'.jpg,'.$faker->word.'.jpg',
             '商品カテゴリ(ID)' => '5,6',
+            'タグ(ID)' => '1,2',
             '商品種別(ID)' => 1,
             '規格分類1(ID)' => 3,
             '規格分類2(ID)' => 6,
@@ -96,8 +96,8 @@ class CsvImportControllerTest extends AbstractAdminWebTestCase
 
         // 規格1のみの商品
         $csvClass1Only = $this->createCsvAsArray(false);
-        $csvClass1Only[0][13] = null; // 規格分類2(ID)
-        $csvClass1Only[0][15] = 'class1-only'; // 商品コード
+        $csvClass1Only[0][14] = null; // 規格分類2(ID)
+        $csvClass1Only[0][16] = 'class1-only'; // 商品コード
         $csv = array_merge($csv, $csvClass1Only);
 
         $this->filepath = $this->createCsvFromArray($csv);
@@ -111,7 +111,7 @@ class CsvImportControllerTest extends AbstractAdminWebTestCase
         $this->verify();
 
         $this->assertRegexp('/商品登録CSVファイルをアップロードしました。/u',
-                            $crawler->filter('div.alert-success')->text());
+            $crawler->filter('div.alert-success')->text());
 
         // 規格1のみ商品の確認
         // dtb_product_class.del_flg = 1 の確認をしたいので PDO で取得
@@ -176,7 +176,7 @@ class CsvImportControllerTest extends AbstractAdminWebTestCase
         $this->verify('fork-0[0-9]-new に商品コードを変更したのは '.$this->expected.'商品規格');
 
         $this->assertRegexp('/商品登録CSVファイルをアップロードしました。/u',
-                            $crawler->filter('div.alert-success')->text());
+            $crawler->filter('div.alert-success')->text());
 
     }
 
@@ -188,7 +188,7 @@ class CsvImportControllerTest extends AbstractAdminWebTestCase
         // 商品生成
         $csv = $this->createCsvAsArray();
         $csv[1][0] = 2;                        // 商品ID = 2 に規格を追加する
-        $csv[1][15] = 'add-class';             // 商品コード
+        $csv[1][16] = 'add-class';             // 商品コード
 
         $this->filepath = $this->createCsvFromArray($csv);
 
@@ -201,7 +201,7 @@ class CsvImportControllerTest extends AbstractAdminWebTestCase
         $this->verify();
 
         $this->assertRegexp('/商品登録CSVファイルをアップロードしました。/u',
-                            $crawler->filter('div.alert-success')->text());
+            $crawler->filter('div.alert-success')->text());
 
         // 規格1のみ商品の確認
         // dtb_product_class.del_flg = 1 の確認をしたいので PDO で取得
@@ -248,7 +248,7 @@ class CsvImportControllerTest extends AbstractAdminWebTestCase
         $config['csv_export_encoding'] = 'UTF-8'; // SJIS だと比較できないので UTF-8 に変更しておく
         $this->app['config'] = $config;
 
-        $this->expectOutputString('商品ID,公開ステータス(ID),商品名,ショップ用メモ欄,商品説明(一覧),商品説明(詳細),検索ワード,フリーエリア,商品削除フラグ,商品画像,商品カテゴリ(ID),商品種別(ID),規格分類1(ID),規格分類2(ID),発送日目安(ID),商品コード,在庫数,在庫数無制限フラグ,販売制限数,通常価格,販売価格,送料,商品規格削除フラグ'."\n");
+        $this->expectOutputString('商品ID,公開ステータス(ID),商品名,ショップ用メモ欄,商品説明(一覧),商品説明(詳細),検索ワード,フリーエリア,商品削除フラグ,商品画像,商品カテゴリ(ID),タグ(ID),商品種別(ID),規格分類1(ID),規格分類2(ID),発送日目安(ID),商品コード,在庫数,在庫数無制限フラグ,販売制限数,通常価格,販売価格,送料,商品規格削除フラグ'."\n");
 
         $crawler = $this->client->request(
             'GET',
@@ -272,7 +272,27 @@ class CsvImportControllerTest extends AbstractAdminWebTestCase
         $this->verify();
 
         $this->assertRegexp('/カテゴリ登録CSVファイルをアップロードしました。/u',
-                            $crawler->filter('div.alert-success')->text());
+            $crawler->filter('div.alert-success')->text());
+    }
+
+    public function testCsvCategoryWithNew()
+    {
+        $csv = array(
+            array('カテゴリID', 'カテゴリ名', '親カテゴリID'),
+            array('', '新カテゴリ', '')
+        );
+        $this->filepath = $this->createCsvFromArray($csv, 'categories.csv');
+
+        $crawler = $this->scenario('admin_product_category_csv_import', 'categories.csv');
+
+        $Categories = $this->app['eccube.repository.category']->findBy(array('name' => '新カテゴリ'));
+
+        $this->expected = 1;
+        $this->actual = count($Categories);
+        $this->verify();
+
+        $this->assertRegexp('/カテゴリ登録CSVファイルをアップロードしました。/u',
+            $crawler->filter('div.alert-success')->text());
     }
 
     public function testCsvTemplateWithCategory()

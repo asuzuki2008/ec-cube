@@ -22,9 +22,10 @@
  */
 
 
-namespace Eccube\Tests\Web\Admin\Setting\System;
+namespace Eccube\Tests\Plugin\Web\Admin\Setting\System;
 
-use Eccube\Tests\Web\Admin\AbstractAdminWebTestCase;
+use Eccube\Event\EccubeEvents;
+use Eccube\Tests\Plugin\Web\Admin\AbstractAdminWebTestCase;
 
 class AuthorityiControllerTest extends AbstractAdminWebTestCase
 {
@@ -36,6 +37,11 @@ class AuthorityiControllerTest extends AbstractAdminWebTestCase
             $this->app->url('admin_setting_system_authority')
         );
         $this->assertTrue($client->getResponse()->isSuccessful());
+
+        $hookpoins = array(
+            EccubeEvents::ADMIN_SETTING_SYSTEM_AUTHORITY_INDEX_INITIALIZE,
+        );
+        $this->verifyOutputString($hookpoins);
     }
 
     public function testRoutingAdminSettingSystemAuthorityPost()
@@ -50,6 +56,9 @@ class AuthorityiControllerTest extends AbstractAdminWebTestCase
                 '_token' => 'dummy',
             ),
         ));
+        $hookpoins = array(
+            EccubeEvents::ADMIN_SETTING_SYSTEM_AUTHORITY_INDEX_INITIALIZE,
+        );
 
         // makes the POST request
         $crawler = $this->client->request('POST', $url, array(
@@ -59,13 +68,14 @@ class AuthorityiControllerTest extends AbstractAdminWebTestCase
             ),
         ));
 
+        //var_dump($crawler->html());
+        $this->assertTrue($client->getResponse()->isRedirect($this->app->url('admin_setting_system_authority')));
 
-        $this->expected = '/abab';
-        $values = $crawler->filter('input[name="form[AuthorityRoles][0][deny_url]"]')->extract(array('value'));
-         $this->actual = $values[0];
-        $this->verify();
-
-        $this->assertTrue($client->getResponse()->isSuccessful());
+        $hookpoins = array_merge($hookpoins, array(
+            EccubeEvents::ADMIN_SETTING_SYSTEM_AUTHORITY_INDEX_INITIALIZE,
+            EccubeEvents::ADMIN_SETTING_SYSTEM_AUTHORITY_INDEX_COMPLETE,
+        ));
+        $this->verifyOutputString($hookpoins);
     }
 
     private function newTestAuthorityRole()
@@ -73,6 +83,7 @@ class AuthorityiControllerTest extends AbstractAdminWebTestCase
         $TestCreator = $this->app['eccube.repository.member']->find(1);
         $AuthorityRole = new \Eccube\Entity\AuthorityRole();
         $Authority = $this->app['eccube.repository.master.authority']->find(0);
+
         $AuthorityRole->setAuthority($Authority);
         $AuthorityRole->setDenyUrl('/abab');
         $AuthorityRole->setCreator($TestCreator);
@@ -82,14 +93,12 @@ class AuthorityiControllerTest extends AbstractAdminWebTestCase
 
     protected function createFormData()
     {
-
         $AuthorityRole = $this->newTestAuthorityRole();
         $form = array(
-            array(
-                 'Authority' => $AuthorityRole->getAuthority(),
-                 'deny_url' => $AuthorityRole->getDenyUrl(),
-                ),
-            );
+            'Authority' => array(
+                'Authority' => $AuthorityRole->getAuthority()->getId(),
+                'deny_url' => $AuthorityRole->getDenyUrl(),
+            ));
 
         return $form;
     }

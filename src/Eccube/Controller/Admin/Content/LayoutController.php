@@ -25,6 +25,8 @@
 namespace Eccube\Controller\Admin\Content;
 
 use Eccube\Application;
+use Eccube\Event\EccubeEvents;
+use Eccube\Event\EventArgs;
 use Symfony\Component\HttpFoundation\Request;
 
 class LayoutController
@@ -47,10 +49,8 @@ class LayoutController
         $BlockPositions = $TargetPageLayout->getBlockPositions();
 
 
-        $listForm = $app['form.factory']
-            ->createBuilder('admin_page_layout')
-            ->getForm();
-        $listForm->get('layout')->setData($TargetPageLayout);
+        $builderLayout = $app['form.factory']
+            ->createBuilder('admin_page_layout');
 
         // 未使用ブロックの取得
         $unusedBlocks = $app['eccube.repository.page_layout']->findUnusedBlocks($DeviceType, $id);
@@ -67,9 +67,28 @@ class LayoutController
             $TargetPageLayout->addBlockPosition($UnusedBlockPosition);
         }
 
-        $form = $app['form.factory']
-            ->createBuilder()
-            ->getForm();
+        $builder = $app['form.factory']
+            ->createBuilder();
+
+        $event = new EventArgs(
+            array(
+                'builder' => $builder,
+                'builderLayout' => $builderLayout,
+                'DeviceType' => $DeviceType,
+                'TargetPageLayout' => $TargetPageLayout,
+                'OrigTargetPageLayout' => $OrigTargetPageLayout,
+                'Blocks' => $Blocks,
+                'BlockPositions' => $BlockPositions,
+            ),
+            $request
+        );
+        $app['eccube.event.dispatcher']->dispatch(EccubeEvents::ADMIN_CONTENT_LAYOUT_INDEX_INITIALIZE, $event);
+
+        $listForm = $builderLayout->getForm();
+
+        $listForm->get('layout')->setData($TargetPageLayout);
+
+        $form = $builder->getForm();
 
         if ('POST' === $request->getMethod()) {
             $form->handleRequest($request);
@@ -134,6 +153,19 @@ class LayoutController
                 $app['orm.em']->persist($TargetPageLayout);
                 $app['orm.em']->flush();
 
+                $event = new EventArgs(
+                    array(
+                        'form' => $form,
+                        'DeviceType' => $DeviceType,
+                        'TargetPageLayout' => $TargetPageLayout,
+                        'OrigTargetPageLayout' => $OrigTargetPageLayout,
+                        'Blocks' => $Blocks,
+                        'BlockPositions' => $BlockPositions,
+                    ),
+                    $request
+                );
+                $app['eccube.event.dispatcher']->dispatch(EccubeEvents::ADMIN_CONTENT_LAYOUT_INDEX_COMPLETE, $event);
+
                 if ($this->isPreview) {
                     if ($OrigTargetPageLayout->getEditFlg()) {
                         if ($OrigTargetPageLayout->getUrl() === 'product_detail') {
@@ -154,7 +186,7 @@ class LayoutController
                             return $app->redirect($app->url($OrigTargetPageLayout->getUrl(), array('preview' => 1)));
                         }
                     } else {
-                        return $app->redirect($app->url('homepage')."user_data/".$OrigTargetPageLayout->getUrl().'?preview=1');
+                        return $app->redirect($app->url('homepage').$app['config']['user_data_route']."/".$OrigTargetPageLayout->getUrl().'?preview=1');
                     }
                 } else {
                     $app->addSuccess('admin.register.complete', 'admin');

@@ -24,12 +24,13 @@
 
 namespace Eccube\Controller\Admin;
 
-use Doctrine\Common\Util\Debug;
 use Doctrine\ORM\NoResultException;
 use Doctrine\ORM\Query\ResultSetMapping;
 use Eccube\Application;
 use Eccube\Common\Constant;
 use Eccube\Controller\AbstractController;
+use Eccube\Event\EccubeEvents;
+use Eccube\Event\EventArgs;
 use Symfony\Component\HttpFoundation\Request;
 
 class AdminController extends AbstractController
@@ -41,11 +42,20 @@ class AdminController extends AbstractController
         }
 
         /* @var $form \Symfony\Component\Form\FormInterface */
-        $form = $app['form.factory']
-            ->createNamedBuilder('', 'admin_login')
-            ->getForm();
+        $builder = $app['form.factory']
+            ->createNamedBuilder('', 'admin_login');
 
-        return $app['view']->render('login.twig', array(
+        $event = new EventArgs(
+            array(
+                'builder' => $builder,
+            ),
+            $request
+        );
+        $app['eccube.event.dispatcher']->dispatch(EccubeEvents::ADMIN_ADMIM_LOGIN_INITIALIZE, $event);
+
+        $form = $builder->getForm();
+
+        return $app->render('login.twig', array(
             'error' => $app['security.last_error']($request),
             'form' => $form->createView(),
         ));
@@ -57,22 +67,44 @@ class AdminController extends AbstractController
         if (isset($app['config']['eccube_install']) && $app['config']['eccube_install'] == 1) {
             $file = $app['config']['root_dir'] . '/html/install.php';
             if (file_exists($file)) {
-                $app->addWarning('admin.install.warning', 'admin');
+                $message = $app->trans('admin.install.warning', array('installphpPath' => 'html/install.php'));
+                $app->addWarning($message, 'admin');
+            }
+            $fileOnRoot = $app['config']['root_dir'] . '/install.php';
+            if (file_exists($fileOnRoot)) {
+                $message = $app->trans('admin.install.warning', array('installphpPath' => 'install.php'));
+                $app->addWarning($message, 'admin');
             }
         }
 
         // 受注マスター検索用フォーム
-        $searchOrderForm = $app['form.factory']
-            ->createBuilder('admin_search_order')
-            ->getForm();
+        $searchOrderBuilder = $app['form.factory']
+            ->createBuilder('admin_search_order');
         // 商品マスター検索用フォーム
-        $searchProductForm = $app['form.factory']
-            ->createBuilder('admin_search_product')
-            ->getForm();
+        $searchProductBuilder = $app['form.factory']
+            ->createBuilder('admin_search_product');
         // 会員マスター検索用フォーム
-        $searchCustomerForm = $app['form.factory']
-            ->createBuilder('admin_search_customer')
-            ->getForm();
+        $searchCustomerBuilder = $app['form.factory']
+            ->createBuilder('admin_search_customer');
+
+        $event = new EventArgs(
+            array(
+                'searchOrderBuilder' => $searchOrderBuilder,
+                'searchProductBuilder' => $searchProductBuilder,
+                'searchCustomerBuilder' => $searchCustomerBuilder,
+            ),
+            $request
+        );
+        $app['eccube.event.dispatcher']->dispatch(EccubeEvents::ADMIN_ADMIM_INDEX_INITIALIZE, $event);
+
+        // 受注マスター検索用フォーム
+        $searchOrderForm = $searchOrderBuilder->getForm();
+
+        // 商品マスター検索用フォーム
+        $searchProductForm = $searchProductBuilder->getForm();
+
+        // 会員マスター検索用フォーム
+        $searchCustomerForm = $searchCustomerBuilder->getForm();
 
         /**
          * 受注状況.
@@ -82,6 +114,14 @@ class AdminController extends AbstractController
         $excludes[] = $app['config']['order_processing'];
         $excludes[] = $app['config']['order_cancel'];
         $excludes[] = $app['config']['order_deliv'];
+
+        $event = new EventArgs(
+            array(
+                'excludes' => $excludes,
+            ),
+            $request
+        );
+        $app['eccube.event.dispatcher']->dispatch(EccubeEvents::ADMIN_ADMIM_INDEX_ORDER, $event);
 
         // 受注ステータスごとの受注件数.
         $Orders = $this->getOrderEachStatus($app['orm.em'], $excludes);
@@ -95,6 +135,14 @@ class AdminController extends AbstractController
         $excludes[] = $app['config']['order_processing'];
         $excludes[] = $app['config']['order_cancel'];
         $excludes[] = $app['config']['order_pending'];
+
+        $event = new EventArgs(
+            array(
+                'excludes' => $excludes,
+            ),
+            $request
+        );
+        $app['eccube.event.dispatcher']->dispatch(EccubeEvents::ADMIN_ADMIM_INDEX_SALES, $event);
 
         // 今日の売上/件数
         $salesToday = $this->getSalesByDay($app['orm.em'], new \DateTime(), $excludes);
@@ -111,6 +159,20 @@ class AdminController extends AbstractController
         // 本会員数
         $countCustomers = $this->countCustomers($app['orm.em']);
 
+        $event = new EventArgs(
+            array(
+                'Orders' => $Orders,
+                'OrderStatuses' => $OrderStatuses,
+                'salesThisMonth' => $salesThisMonth,
+                'salesToday' => $salesToday,
+                'salesYesterday' => $salesYesterday,
+                'countNonStockProducts' => $countNonStockProducts,
+                'countCustomers' => $countCustomers,
+            ),
+            $request
+        );
+        $app['eccube.event.dispatcher']->dispatch(EccubeEvents::ADMIN_ADMIM_INDEX_COMPLETE, $event);
+
         return $app->render('index.twig', array(
             'searchOrderForm' => $searchOrderForm->createView(),
             'searchProductForm' => $searchProductForm->createView(),
@@ -126,8 +188,73 @@ class AdminController extends AbstractController
     }
 
     /**
+     * パスワード変更画面
+     *
+     * @param Application $app
+     * @param Request $request
+     * @return \Symfony\Component\HttpFoundation\RedirectResponse|\Symfony\Component\HttpFoundation\Response
+     */
+    public function changePassword(Application $app, Request $request)
+    {
+        $builder = $app['form.factory']
+            ->createBuilder('admin_change_password');
+
+        $event = new EventArgs(
+            array(
+                'builder' => $builder,
+            ),
+            $request
+        );
+        $app['eccube.event.dispatcher']->dispatch(EccubeEvents::ADMIN_ADMIM_CHANGE_PASSWORD_INITIALIZE, $event);
+
+        $form = $builder->getForm();
+        $form->handleRequest($request);
+
+        if ($form->isSubmitted() && $form->isValid()) {
+            $password = $form->get('change_password')->getData();
+
+            $Member = $app->user();
+
+            $dummyMember = clone $Member;
+            $dummyMember->setPassword($password);
+            $salt = $dummyMember->getSalt();
+            if (!isset($salt)) {
+                $salt = $app['eccube.repository.member']->createSalt(5);
+                $dummyMember->setSalt($salt);
+            }
+
+            $encryptPassword = $app['eccube.repository.member']->encryptPassword($dummyMember);
+
+            $Member
+                ->setPassword($encryptPassword)
+                ->setSalt($salt);
+
+            $status = $app['eccube.repository.member']->save($Member);
+            if ($status) {
+                $event = new EventArgs(
+                    array(
+                        'form' => $form,
+                    ),
+                    $request
+                );
+                $app['eccube.event.dispatcher']->dispatch(EccubeEvents::ADMIN_ADMIN_CHANGE_PASSWORD_COMPLETE, $event);
+
+                $app->addSuccess('admin.change_password.save.complete', 'admin');
+
+                return $app->redirect($app->url('admin_change_password'));
+            }
+
+            $app->addError('admin.change_password.save.error', 'admin');
+        }
+
+        return $app->render('change_password.twig', array(
+            'form' => $form->createView(),
+        ));
+    }
+
+    /**
      * 在庫なし商品の検索結果を表示する.
-     * 
+     *
      * @param Application $app
      * @param Request $request
      * @return \Symfony\Component\HttpFoundation\Response
@@ -138,14 +265,14 @@ class AdminController extends AbstractController
         $form = $app['form.factory']
             ->createBuilder('admin_search_product')
             ->getForm();
-        
+
         if ('POST' === $request->getMethod()) {
             $form->handleRequest($request);
-        
+
             if ($form->isValid()) {
                 // 在庫なし商品の検索条件をセッションに付与し, 商品マスタへリダイレクトする.
                 $searchData = array();
-                $searchData['stock_status'] = Constant::DISABLED;    
+                $searchData['stock_status'] = Constant::DISABLED;
                 $session = $request->getSession();
                 $session->set('eccube.admin.product.search', $searchData);
 
@@ -154,10 +281,10 @@ class AdminController extends AbstractController
                     'status' => $app['config']['admin_product_stock_status'])));
             }
         }
-        
+
         return $app->redirect($app->url('admin_homepage'));
     }
-    
+
     protected function findOrderStatus($em, array $excludes)
     {
         $qb = $em

@@ -39,7 +39,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 <script src="https://ajax.googleapis.com/ajax/libs/jquery/1.11.3/jquery.min.js"></script>
 <script>window.jQuery || document.write('<script src="{{ app.config.admin_urlpath }}/assets/js/vendor/jquery-1.11.3.min.js?v={{ constant('Eccube\\Common\\Constant::VERSION') }}"><\/script>')</script>
 </head>
-<body>
+<body id="page_{{ app.request.get('_route') }}">
 <div id="wrapper" class="sidebar-open">
     <!-- ▼ #header ▼ -->
     <header id="header" role="navigation">
@@ -70,7 +70,9 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
                         </dt>
                         <dd class="dropdown-menu">
                             最終ログイン<br>
-                            {{ app.user.login_date.format('Y/m/d H:i')|default('') }} <a class="btn btn-primary btn-xs" href="{{ url(app.config.admin_route ~ '_logout') }}">ログアウト</a>
+                            {{ app.user.login_date.format('Y/m/d H:i')|default('') }}
+                            <a class="btn btn-primary btn-xs" href="{{ url('admin_change_password') }}">パスワード変更</a>
+                            <a class="btn btn-primary btn-xs" href="{{ url(app.config.admin_route ~ '_logout') }}">ログアウト</a>
                         </dd>
                     {% endif %}
                 </dl>

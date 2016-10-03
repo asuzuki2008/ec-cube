@@ -46,6 +46,8 @@ class AdminControllerProvider implements ControllerProviderInterface
         // login
         $c->match('/login', '\Eccube\Controller\Admin\AdminController::login')->bind('admin_login');
 
+        // change password
+        $c->match('/change_password', '\Eccube\Controller\Admin\AdminController::changePassword')->bind('admin_change_password');
 
         // product
         $c->match('/product', '\Eccube\Controller\Admin\Product\ProductController::index')->bind('admin_product');
@@ -202,6 +204,7 @@ class AdminControllerProvider implements ControllerProviderInterface
 
         // system/masterdata
         $c->match('/setting/system/masterdata', '\Eccube\Controller\Admin\Setting\System\MasterdataController::index')->bind('admin_setting_system_masterdata');
+        $c->match('/setting/system/masterdata/{entity}/edit', '\Eccube\Controller\Admin\Setting\System\MasterdataController::index')->bind('admin_setting_system_masterdata_view');
         $c->match('/setting/system/masterdata/edit', '\Eccube\Controller\Admin\Setting\System\MasterdataController::edit')->bind('admin_setting_system_masterdata_edit');
 
         // store
@@ -222,6 +225,7 @@ class AdminControllerProvider implements ControllerProviderInterface
         $c->match('/store/plugin/handler_up/{handlerId}', '\Eccube\Controller\Admin\Store\PluginController::handler_up')->bind('admin_store_plugin_handler_up');
         $c->match('/store/plugin/handler_down/{handlerId}', '\Eccube\Controller\Admin\Store\PluginController::handler_down')->bind('admin_store_plugin_handler_down');
         $c->match('/store/plugin/authentication_setting', '\Eccube\Controller\Admin\Store\PluginController::authenticationSetting')->bind('admin_store_authentication_setting');
+        $c->put('/store/plugin/authentication_setting_download', '\Eccube\Controller\Admin\Store\PluginController::download')->bind('admin_setting_system_authority_download');
 
         return $c;
     }
